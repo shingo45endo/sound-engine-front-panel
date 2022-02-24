@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+<title>E-mu Sound Engine Virtual Front Panel</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ka7Sk0Gln4gmtz2MlQnikT1wXgYsOg+OMhuP+IlRH9sENBO0LRn5q+8nbTov4+1p" crossorigin="anonymous"></script>
+<script type="module">
+import './proteus_lcd.js';
+
+window.addEventListener('DOMContentLoaded', () => {
+	const elemLcd = document.getElementById('my-lcd');
+	const elemMidiIn  = document.getElementById('my-midi-in-devices');
+	const elemMidiOut = document.getElementById('my-midi-out-devices');
+
+	let currentMidiIn;
+	let currentMidiOut;
+	let currentChannelNo = 0;
+
+	(async () => {
+		// Sets up MIDI devices.
+		const midiAccess = await navigator.requestMIDIAccess({sysex: true});
+		midiAccess.addEventListener('statechange', updateMidiDevices);
+		updateMidiDevices();
+
+		// Switches current MIDI devices.
+		elemMidiIn.addEventListener('change', (event) => {
+			if (currentMidiIn) {
+				currentMidiIn.onmidimessage = null;
+			}
+			currentMidiIn = null;
+
+			const id = event.target.options[event.target.selectedIndex].id;
+			for (const input of [...midiAccess.inputs.values()]) {
+				if (input.id === id) {
+					currentMidiIn = input;
+					currentMidiIn.onmidimessage = handleMidiMessage;
+					break;
+				}
+			}
+
+			triggerUpdateLcd();
+		});
+		elemMidiOut.addEventListener('change', (event) => {
+			currentMidiOut = null;
+
+			const id = event.target.options[event.target.selectedIndex].id;
+			for (const output of [...midiAccess.outputs.values()]) {
+				if (output.id === id) {
+					currentMidiOut = output;
+					break;
+				}
+			}
+
+			triggerUpdateLcd();
+		});
+
+		function updateMidiDevices() {
+			// Updates the current MIDI devices.
+			if (currentMidiIn && currentMidiIn.connection !== 'open') {
+				currentMidiIn.onmidimessage = null;
+				currentMidiIn = null;
+			}
+			if (currentMidiOut && currentMidiOut.connection !== 'open') {
+				currentMidiOut = null;
+			}
+
+			// Updates the list.
+			elemMidiIn.innerHTML = '<option>Disconnected</option>';
+			for (const input of [...midiAccess.inputs.values()]) {
+				elemMidiIn.insertAdjacentHTML('beforeend', `<option id="${input.id}" ${(currentMidiIn && currentMidiIn.id === input.id) ? 'selected' : ''}>${input.name}</option>`);
+			}
+			elemMidiOut.innerHTML = '<option>Disconnected</option>';
+			for (const output of [...midiAccess.outputs.values()]) {
+				elemMidiOut.insertAdjacentHTML('beforeend', `<option id="${output.id}" ${(currentMidiOut && currentMidiOut.id === output.id) ? 'selected' : ''}>${output.name}</option>`);
+			}
+		}
+
+	})().catch((error) => {
+		console.error(error);
+		document.getElementById('my-alert').classList.remove('d-none');
+	});
+
+	function handleMidiMessage(event) {
+		flashLed('recv', 'blink');
+		document.getElementById('my-midimes').textContent += `[${currentDateTime()}](I) ${bytesToHex(event.data)}\n`;
+
+		const [tmpF0, mfrId, modelId, _, commandId, ...values] = event.data.slice(0, -1);
+		if (tmpF0 !== 0xf0 || mfrId !== 0x18 || modelId !== 0x04) {
+			return;
+		}
+
+		// Front Panel Data command
+		if (commandId === 0x18) {
+			const text = String.fromCharCode(...values.slice(0, 32));
+			const cursorPos = values[32];
+			const ledMaster = values[33] & 0b00000001;
+			const ledEdit   = (values[33] & 0b00000010) >> 1;
+			const ledEnter  = (values[33] & 0b00001100) >> 2;
+
+			// Gets the current channel from the screen text.
+			const m = text.match(/^C([01][0-9]) /u);
+			if (m) {
+				currentChannelNo = Number(m[1]) - 1;
+			}
+
+			// Updates screen.
+			elemLcd.text = text;
+			elemLcd.cursorPos = cursorPos;
+
+			// Turns LEDs on/off according to the current status.
+			flashLed('master', (ledMaster) ? 'turnon' : 'turnoff');
+			flashLed('edit',   (ledEdit)   ? 'turnon' : 'turnoff');
+			flashLed('enter',  {0: 'turnoff', 1: 'turnon', 2: 'flashing'}[ledEnter]);
+		}
+	}
+
+	function sendMidiMessage(bytes) {
+		if (currentMidiOut) {
+			currentMidiOut.send(bytes);
+			flashLed('send', 'blink');
+			document.getElementById('my-midimes').textContent += `[${currentDateTime()}](O) ${bytesToHex(bytes)}\n`;
+		}
+	}
+
+	function currentDateTime() {
+		const dt = new Date();
+		return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}:${String(dt.getSeconds()).padStart(2, '0')}`;
+	}
+
+	function bytesToHex(bytes) {
+		console.assert(bytes && bytes.length);
+		return [...bytes].map((e) => `0${Number(e).toString(16)}`.slice(-2)).join(' ');
+	}
+
+	function flashLed(kind, anim) {
+		const elem = document.getElementById(`my-led-${kind}`);
+		const animation = {
+			blink:    'led-blink 0.2s forwards',
+			turnoff:  'led-turnoff 0s forwards',
+			turnon:   'led-turnon 0s forwards',
+			flashing: 'led-flashing 0.5s infinite',
+		}[anim];
+
+		if (elem && animation) {
+			elem.style.animation = '';
+			void elem.offsetLeft;	// Force layout
+			elem.style.animation = animation;
+		}
+	}
+
+	function triggerUpdateLcd() {
+		sendMidiMessage([0xf0, 0x18, 0x04, 0x00, 0x17, 0xf7]);
+	}
+
+	document.getElementById('my-refresh').addEventListener('click', triggerUpdateLcd);
+
+	[...document.querySelectorAll('[data-switch]')].forEach((elem) => {
+		elem.addEventListener('click', () => {
+			const switchNo = Number(elem.dataset.switch);
+			sendMidiMessage([0xf0, 0x18, 0x04, 0x00, 0x19, switchNo, 0xf7]);
+			triggerUpdateLcd();
+		});
+	});
+
+	document.getElementById('my-frontpanel').addEventListener('wheel', (event) => {
+		if (event.deltaY < 0) {
+			document.getElementById('my-data-minus').click();
+		}
+		if (event.deltaY > 0) {
+			document.getElementById('my-data-plus').click();
+		}
+	});
+
+	const keyCode2noteNo = Object.freeze({
+		KeyZ:    0,
+		KeyS:    1,
+		KeyX:    2,
+		KeyD:    3,
+		KeyC:    4,
+		KeyV:    5,
+		KeyG:    6,
+		KeyB:    7,
+		KeyH:    8,
+		KeyN:    9,
+		KeyJ:   10,
+		KeyM:   11,
+		Comma:  12,
+
+		KeyQ:   12,
+		Digit2: 13,
+		KeyW:   14,
+		Digit3: 15,
+		KeyE:   16,
+		KeyR:   17,
+		Digit5: 18,
+		KeyT:   19,
+		Digit6: 20,
+		KeyY:   21,
+		Digit7: 22,
+		KeyU:   23,
+		KeyI:   24,
+	});
+
+	const notes = {};
+	function noteOn(keyCode) {
+		console.assert(keyCode in keyCode2noteNo);
+
+		if (notes[keyCode]) {
+			const [b0, b1] = notes[keyCode];
+			sendMidiMessage([b0, b1, 0]);
+			notes[keyCode] = null;
+		}
+
+		console.assert(!notes[keyCode]);
+		const noteNo = keyCode2noteNo[keyCode] + 12 * Number(document.forms['my-settings'].octave.value);
+		const velocity = Number(document.getElementById('my-velocity').value);
+		if ((0 <= noteNo && noteNo < 128) && (1 < velocity && velocity < 128)) {
+			const mes = [0x90 | currentChannelNo, noteNo, velocity];
+			sendMidiMessage(mes);
+			notes[keyCode] = mes;
+		}
+	}
+	function noteOff(keyCode) {
+		console.assert(keyCode in keyCode2noteNo);
+
+		const mes = notes[keyCode];
+		if (mes) {
+			const [b0, b1] = notes[keyCode];
+			if ((b0 & 0x0f) !== currentChannelNo) {
+				sendMidiMessage([0x90 | currentChannelNo, b1, 0]);
+			}
+			sendMidiMessage([b0, b1, 0]);
+			notes[keyCode] = null;
+		}
+	}
+
+	document.addEventListener('keydown', (event) => {
+		if (event.repeat) {
+			return;
+		}
+		const keyCode = event.code;
+		if (keyCode in keyCode2noteNo) {
+			noteOn(keyCode);
+		}
+	});
+	document.addEventListener('keyup', (event) => {
+		const keyCode = event.code;
+		if (keyCode in keyCode2noteNo) {
+			noteOff(keyCode);
+		}
+	});
+
+	[...document.querySelectorAll('[data-keycode]')].forEach((elem) => {
+		elem.addEventListener('mousedown', () => {
+			const keyCode = elem.dataset.keycode;
+			if (keyCode in keyCode2noteNo) {
+				noteOn(keyCode);
+			}
+		});
+		elem.addEventListener('mouseup', () => {
+			const keyCode = elem.dataset.keycode;
+			if (keyCode in keyCode2noteNo) {
+				noteOff(keyCode);
+			}
+		});
+		elem.addEventListener('click', () => {
+			elem.blur();
+		});
+
+		elem.setAttribute('title', elem.dataset.keycode);
+	});
+});
+</script>
+<style>
+proteus-lcd {
+	color: hsl(75, 100%, 50%);
+	background-color: hsl(75, 100%, 12.5%);
+}
+
+[id^='my-led-'] {
+	opacity: 0.25;
+}
+
+@keyframes led-blink {
+	0% {opacity: 1;}
+	100% {opacity: 0.25;}
+}
+
+@keyframes led-turnoff {
+	0% {opacity: 0.25;}
+	100% {opacity: 0.25;}
+}
+
+@keyframes led-turnon {
+	0% {opacity: 1;}
+	100% {opacity: 1;}
+}
+
+@keyframes led-flashing {
+	0% {opacity: 1;}
+	25% {opacity: 1;}
+	50% {opacity: 0.25;}
+	75% {opacity: 0.25;}
+	100% {opacity: 1;}
+}
+</style>
+</head>
+
+<body>
+	<!-- Navbar -->
+	<nav class="navbar navbar-light bg-light">
+		<div class="container">
+			<h1 class="h6"><span class="navbar-brand">E-mu Sound Engine<br>Virtual Front Panel</span></h1>
+			<form>
+				<div class="input-group">
+					<label class="input-group-text" for="my-midi-in-devices" style="width: 6rem;">MIDI In</label>
+					<select id="my-midi-in-devices" class="form-select form-select-sm" style="min-width: 10rem;"></select>
+				</div>
+				<div class="input-group">
+					<label class="input-group-text" for="my-midi-out-devices" style="width: 6rem;">MIDI Out</label>
+					<select id="my-midi-out-devices" class="form-select form-select-sm" style="min-width: 10rem;"></select>
+				</div>
+			</form>
+		</div>
+	</nav>
+
+	<!-- Main screen -->
+	<main class="container mt-2">
+		<div id="my-alert" class="alert alert-danger d-none" role="alert">
+			This application doesn't work on your browser.
+		</div>
+
+		<div id="my-frontpanel" class="card mt-3">
+			<div class="card-header d-flex justify-content-between">
+				<h2 class="h5">Front Panel</h2>
+				<button id="my-refresh" type="button" class="btn btn-outline-secondary btn-sm">Refresh</button>
+			</div>
+			<div class="card-body">
+				<proteus-lcd id="my-lcd" text="Plug MIDI In&Outto Sound Engine" cursorpos="31"></proteus-lcd>
+				<hr>
+				<div class="row d-flex">
+					<div class="col" style="flex: 1;">
+						<span id="my-led-send" class="badge rounded-pill bg-primary w-100 mb-1">MIDI Send</span>
+						<span id="my-led-recv" class="badge rounded-pill bg-success w-100">MIDI Recv.</span>
+					</div>
+					<div class="col align-self-end" style="flex: 1;">
+						<span id="my-led-master" class="badge rounded-pill bg-primary w-100 mb-3" title="Master LED">&nbsp;</span>
+						<button type="button" class="btn btn-outline-secondary w-100" data-switch="0">Master</button>
+					</div>
+					<div class="col align-self-end" style="flex: 1;">
+						<span id="my-led-edit" class="badge rounded-pill bg-primary w-100 mb-3" title="Edit LED">&nbsp;</span>
+						<button type="button" class="btn btn-outline-secondary w-100" data-switch="1">Edit</button>
+					</div>
+					<div class="col align-self-end" style="flex: 1;">
+						<span id="my-led-enter" class="badge rounded-pill bg-primary w-100 mb-3" title="Enter LED">&nbsp;</span>
+						<button type="button" class="btn btn-outline-secondary w-100" data-switch="2">Enter</button>
+					</div>
+					<div class="col align-self-end" style="flex: 1;">
+						<button type="button" class="btn btn-outline-secondary w-100" data-switch="4">Cursor</button>
+					</div>
+					<div class="col align-self-end" style="flex: 1;">
+						<div class="btn-group-vertical w-100" role="group">
+							<button id="my-data-minus" type="button" class="btn btn-outline-secondary w-100" data-switch="3">Data -1</button>
+							<button id="my-data-plus" type="button" class="btn btn-outline-secondary w-100" data-switch="5">Data +1</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="card mt-3">
+			<div class="card-header">
+				<ul class="nav nav-tabs card-header-tabs" role="tablist">
+					<li class="nav-item" role="presentation">
+						<a id="my-tab-keyboard" class="nav-link active" data-bs-toggle="tab" href="#my-pane-keyboard" role="tab">Keyboard</a>
+					</li>
+					<li class="nav-item" role="presentation">
+						<a id="my-tab-midimes" class="nav-link" data-bs-toggle="tab" href="#my-pane-midimes" role="tab">MIDI Message</a>
+					</li>
+				</ul>
+			</div>
+			<div class="card-body">
+				<div class="tab-content">
+					<div class="tab-pane active" id="my-pane-keyboard" role="tabpanel">
+						<form id="my-settings">
+							<div class="row">
+								<div class="col-2 col-form-label text-end">Octave</div>
+								<div class="col-10">
+									<div class="btn-toolbar" role="toolbar">
+										<div class="btn-group btn-group-sm" role="group">
+											<input type="radio" id="my-octave-m1" class="btn-check" name="octave" autocomplete="off" value="0">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-m1">O-1</label>
+											<input type="radio" id="my-octave-0" class="btn-check" name="octave" autocomplete="off" value="1">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-0">O0</label>
+											<input type="radio" id="my-octave-1" class="btn-check" name="octave" autocomplete="off" value="2">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-1">O1</label>
+											<input type="radio" id="my-octave-2" class="btn-check" name="octave" autocomplete="off" value="3">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-2">O2</label>
+											<input type="radio" id="my-octave-3" class="btn-check" name="octave" autocomplete="off" value="4" checked>
+											<label class="btn btn-outline-secondary px-3" for="my-octave-3">O3</label>
+											<input type="radio" id="my-octave-4" class="btn-check" name="octave" autocomplete="off" value="5">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-4">O4</label>
+											<input type="radio" id="my-octave-5" class="btn-check" name="octave" autocomplete="off" value="6">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-5">O5</label>
+											<input type="radio" id="my-octave-6" class="btn-check" name="octave" autocomplete="off" value="7">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-6">O6</label>
+											<input type="radio" id="my-octave-7" class="btn-check" name="octave" autocomplete="off" value="8">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-7">O7</label>
+											<input type="radio" id="my-octave-8" class="btn-check" name="octave" autocomplete="off" value="9">
+											<label class="btn btn-outline-secondary px-3" for="my-octave-8">O8</label>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div class="row">
+								<div class="col-2 col-form-label text-end"><label class="form-label" for="my-velocity">Velocity</label></div>
+								<div class="col-4">
+									<input type="range" id="my-velocity" class="form-range" min="1" max="127" value="100">
+								</div>
+							</div>
+							<hr>
+							<div class="row mb-2 pe-4">
+								<div class="col-1"></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="Digit2">C#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="Digit3">D#</button></div>
+								<div class="col"></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="Digit5">F#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="Digit6">G#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="Digit7">A#</button></div>
+								<div class="col"></div>
+								<div class="col"></div>
+							</div>
+							<div class="row mb-3 ps-4">
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyQ">C</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyW">D</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyE">E</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyR">F</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyT">G</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyY">A</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyU">B</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyI">C</button></div>
+								<div class="col-1"></div>
+							</div>
+							<hr>
+							<div class="row mb-2 pe-4">
+								<div class="col-1"></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="KeyS">C#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="KeyD">D#</button></div>
+								<div class="col"></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="KeyG">F#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="KeyH">G#</button></div>
+								<div class="col"><button type="button" class="btn btn-secondary w-100" data-keycode="KeyJ">A#</button></div>
+								<div class="col"></div>
+								<div class="col"></div>
+							</div>
+							<div class="row mb-3 ps-4">
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyZ">C</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyX">D</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyC">E</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyV">F</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyB">G</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyN">A</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="KeyM">B</button></div>
+								<div class="col"><button type="button" class="btn btn-outline-secondary w-100" data-keycode="Comma">C</button></div>
+								<div class="col-1"></div>
+							</div>
+						</form>
+					</div>
+					<div class="tab-pane" id="my-pane-midimes" role="tabpanel">
+						<pre id="my-midimes" class="border rounded-2 p-2"style="height: 20rem;"></pre>
+					</div>
+				</div>
+			</div>
+		</div>
+	</main>
+</body>
+</html>

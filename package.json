@@ -1,0 +1,26 @@
+{
+  "name": "sound-engine-front-panel",
+  "version": "0.1.0",
+  "description": "A virtual front panel for E-mu Sound Engine",
+  "engines": {
+    "node": ">=12.17"
+  },
+  "type": "module",
+  "scripts": {
+    "lint": "eslint *.js index.html"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/shingo45endo/sound-engine-front-panel.git"
+  },
+  "author": "shingo45endo",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/shingo45endo/sound-engine-front-panel/issues"
+  },
+  "homepage": "https://github.com/shingo45endo/sound-engine-front-panel#readme",
+  "devDependencies": {
+    "eslint": "^7.32.0",
+    "eslint-plugin-html": "^6.1.2"
+  }
+}
