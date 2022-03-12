@@ -80,6 +80,8 @@ window.addEventListener('DOMContentLoaded', () => {
 	})().catch((error) => {
 		console.error(error);
 		document.getElementById('my-alert').classList.remove('d-none');
+		elemMidiIn.disabled = true;
+		elemMidiOut.disabled = true;
 	});
 
 	function handleMidiMessage(event) {
